@@ -497,7 +497,10 @@ HEADERS is an alist of additional headers."
          (api-path (if (string= confluemacs-api-version "v2")
                        "/wiki/rest/api/v2"
                      "/rest/api"))
-         (url (concat confluemacs-base-url api-path endpoint))
+         (url-query-string (url-build-query-string params))
+         (url (concat confluemacs-base-url api-path endpoint (if url-query-string
+                                                                 (concat "?" url-query-string)
+                                                               "")))
          (auth (format "Basic %s"
                        (base64-encode-string (concat user ":" token) t)))
          (all-headers (append headers
@@ -506,29 +509,14 @@ HEADERS is an alist of additional headers."
                                 ("Accept" . "application/json")
                                 ("User-Agent" . ,confluemacs-user-agent)
                                 ("X-Atlassian-Token" . "no-check")))))
-    (condition-case err
-        (let ((response (plz method url
-                           :headers all-headers
-                           :params params
-                           :body (when data (json-encode data))
-                           :as 'json)))
-          response)
-      (plz-error
-       (let ((status (plist-get (cdr err) :status)))
-         (cond
-          ((eq status 410)
-           (message "Confluemacs: API endpoint deprecated. Please update to v2 API."))
-          ((eq status 401)
-           (message "Confluemacs: Authentication failed. Check your API token."))
-          ((eq status 403)
-           (message "Confluemacs: Permission denied."))
-          ((eq status 429)
-           (message "Confluemacs: Rate limit exceeded. Please try again later."))
-          (t
-           (message "Confluemacs API error: %s (Status: %s)"
-                    (plist-get (cdr err) :message)
-                    (or status "Unknown"))))
-         nil)))))
+    (plz (intern method) url
+      :headers all-headers
+      :body (when data (json-encode data))
+      :as 'json-read
+      :then (lambda (response)
+              (message "--- response: %s" response)
+              response)
+      :else (lambda (err) (message "--- error: %s" err)))))
 
 (defun confluemacs--make-request-async (endpoint method callback &optional params data headers)
   "Make an asynchronous HTTP request to the Confluence Cloud API.
@@ -546,7 +534,10 @@ HEADERS is an alist of additional headers."
          (api-path (if (string= confluemacs-api-version "v2")
                        "/wiki/rest/api/v2"
                      "/rest/api"))
-         (url (concat confluemacs-base-url api-path endpoint))
+         (url-query-string (url-build-query-string params))
+         (url (concat confluemacs-base-url api-path endpoint (if url-query-string
+                                                                 (concat "?" url-query-string)
+                                                               "")))
          (auth (format "Basic %s"
                        (base64-encode-string (concat user ":" token) t)))
          (all-headers (append headers
@@ -555,29 +546,16 @@ HEADERS is an alist of additional headers."
                                 ("Accept" . "application/json")
                                 ("User-Agent" . ,confluemacs-user-agent)
                                 ("X-Atlassian-Token" . "no-check")))))
-    (plz method url
+    (plz (intern method) url
       :headers all-headers
-      :params params
       :body (when data (json-encode data))
-      :as 'json
-      :then (lambda (data)
-              (funcall callback (cons data nil)))
+      :as 'json-read
+      :then (lambda (response)
+              (message "--- response: %s" response)
+              response)
       :else (lambda (err)
-              (let ((status (plist-get (cdr err) :status)))
-                (cond
-                 ((eq status 410)
-                  (message "Confluemacs: API endpoint deprecated. Please update to v2 API."))
-                 ((eq status 401)
-                  (message "Confluemacs: Authentication failed. Check your API token."))
-                 ((eq status 403)
-                  (message "Confluemacs: Permission denied."))
-                 ((eq status 429)
-                  (message "Confluemacs: Rate limit exceeded. Please try again later."))
-                 (t
-                  (message "Confluemacs API error: %s (Status: %s)"
-                           (plist-get (cdr err) :message)
-                           (or status "Unknown"))))
-                (funcall callback (cons nil err)))))))
+              (message "--- error: %s" err)
+              err))))
 
 (defvar confluemacs--progress-timer nil
   "Timer for progress indicator animation.")
@@ -586,16 +564,18 @@ HEADERS is an alist of additional headers."
   "Current progress message.")
 
 (defun confluemacs--show-progress (message)
-  "Show progress MESSAGE with animated dots."
-  (setq confluemacs--progress-message message)
-  (when confluemacs--progress-timer
-    (cancel-timer confluemacs--progress-timer))
-  (let ((dots ""))
-    (setq confluemacs--progress-timer
-          (run-with-timer 0 0.5
-                          (lambda ()
-                            (setq dots (if (>= (length dots) 3) "" (concat dots ".")))
-                            (message "%s%s" confluemacs--progress-message dots))))))
+  ;; FIXME gets stuck
+  ;; "Show progress MESSAGE with animated dots."
+  ;; (setq confluemacs--progress-message message)
+  ;; (when confluemacs--progress-timer
+  ;;   (cancel-timer confluemacs--progress-timer))
+  ;; (let ((dots ""))
+  ;;   (setq confluemacs--progress-timer
+  ;;         (run-with-timer 0 0.5
+  ;;                         (lambda ()
+  ;;                           (setq dots (if (>= (length dots) 3) "" (concat dots ".")))
+  ;;                           (message "%s%s" confluemacs--progress-message dots)))))
+  )
 
 (defun confluemacs--hide-progress ()
   "Hide progress indicator."
@@ -654,8 +634,8 @@ HEADERS is an alist of additional headers."
                         (v2-working "Migrate to v2 immediately - v1 may be disabled")
                         (v1-working "Continue with v1 for now, but prepare for v2 migration")
                         (t "Check your connection and credentials")))))
-          '(("limit" . 1)))))
-     '(("limit" . 1)))))
+          '(("limit" 1)))))
+     '(("limit" 1)))))
 
 ;;;###autoload
 (defun confluemacs-migrate-to-v2 ()
@@ -790,7 +770,7 @@ This function uses call-process instead of shell-command for security."
 
 (defun confluemacs--display-spaces ()
   "Display a list of Confluence spaces."
-  (let* ((response (confluemacs--make-request "/space" "GET" '(("limit" . 100))))
+  (let* ((response (confluemacs--make-request "/space" "GET" '(("limit" 100))))
          (spaces (confluemacs--handle-response response)))
     (when spaces
       (insert (format "%-10s %-30s\n" "Key" "Name"))
@@ -833,12 +813,14 @@ This function uses call-process instead of shell-command for security."
                    (put-text-property (line-beginning-position) (line-end-position)
                                       'confluemacs-key key))))
              (goto-char (point-min)))))))
-   '(("limit" . 100))))
+   '(("limit" 100))))
 
 (defun confluemacs--display-content (space-key)
   "Display content for SPACE-KEY."
   (let* ((response (confluemacs--make-request "/content" "GET"
-                                              `(("spaceKey" . ,space-key) ("expand" . ,confluemacs-expand-default) ("limit" . 100))))
+                                              `(("spaceKey"  ,space-key)
+                                                ("expand" ,confluemacs-expand-default)
+                                                ("limit" 100))))
          (content-list (confluemacs--handle-response response)))
     (when content-list
       (insert (format "%-10s %-30s\n" "ID" "Title"))
@@ -914,7 +896,7 @@ EXPAND is a string of fields to expand (default: confluemacs-expand-default)."
           (message "Switched to existing buffer for content %s" id))
       ;; Create new buffer
       (let* ((response (confluemacs--make-request (format "/content/%s" id) "GET"
-                                                  `(("expand" . ,(or expand confluemacs-expand-default)))))
+                                                  `(("expand" ,(or expand confluemacs-expand-default)))))
              (content response))
         (when content
           (let* ((body (cdr (assq 'storage (cdr (assq 'body content)))))
